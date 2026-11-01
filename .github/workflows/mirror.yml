@@ -1,0 +1,80 @@
+
+name: Daily Mirror
+
+on:
+  schedule:
+    - cron: '0 16 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  mirror:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout target repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Mirror upstream repository
+        env:
+          UPSTREAM_URL: https://github.com/apaodh/apaodh.git
+        run: |
+          set -e
+
+          TARGET_BRANCH="${GITHUB_REF_NAME}"
+
+          UPSTREAM_BRANCH=$(git ls-remote --symref \
+            "$UPSTREAM_URL" HEAD |
+            awk '/^ref:/ {
+              sub("refs/heads/", "", $2)
+              print $2
+            }')
+
+          if [ -z "$UPSTREAM_BRANCH" ]; then
+            echo "无法获取上游默认分支"
+            exit 1
+          fi
+
+          echo "上游分支: $UPSTREAM_BRANCH"
+          echo "目标分支: $TARGET_BRANCH"
+
+          # 备份目标仓库工作流
+          mkdir -p /tmp/backup-workflows
+
+          if [ -d .github/workflows ]; then
+            cp -a .github/workflows/. /tmp/backup-workflows/
+          fi
+
+          # 获取上游代码
+          git remote add upstream "$UPSTREAM_URL"
+          git fetch upstream "$UPSTREAM_BRANCH"
+
+          # 覆盖目标分支
+          git checkout -B "$TARGET_BRANCH" \
+            "upstream/$UPSTREAM_BRANCH"
+
+          # 恢复原有工作流
+          mkdir -p .github/workflows
+          cp -a /tmp/backup-workflows/. .github/workflows/ \
+            2>/dev/null || true
+
+          # 提交工作流变更
+          git add -A .github/workflows
+
+          if ! git diff --cached --quiet; then
+            git config user.name "github-actions[bot]"
+            git config user.email \
+              "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit -m "Preserve GitHub Actions workflows"
+          fi
+
+          # 推送镜像
+          git push --force origin \
+            "HEAD:refs/heads/$TARGET_BRANCH"
+
+          echo "镜像同步成功！"
